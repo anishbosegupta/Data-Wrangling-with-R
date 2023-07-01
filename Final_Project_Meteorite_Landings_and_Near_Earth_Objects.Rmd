@@ -1,0 +1,352 @@
+---
+title: "Meteorite Landings and Near Earth Objects"
+author: "Anish Gupta"
+output:
+  html_document:
+   toc: true
+   toc_depth: 2
+   toc_float:
+      collapsed: true
+      smooth_scroll: false
+editor_options:
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(rvest)
+library(jsonlite)
+library(ggthemes)
+library(readxl)
+library(lubridate)
+library(sf)
+library(mapview)
+library(plotly)
+library(dplyr)
+library(maps)
+library(packcircles)
+library(reshape2)
+library(RColorBrewer)
+library(countrycode)
+library(ggbeeswarm)
+library(rworldmap)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+# Prepare Data
+
+## Read Data: Meteorite Landings and Near Earth Objects from NASA's website.
+
+For the Meteorite Landings, I initially pulled data using NASA's API. Unfortunately, I found out very late that NASA places an hourly limit of 1,000 requests per hour.
+In order to get higher rate limits, one needs to contact NASA.
+Due to this reason, I had to use a CSV file to perform my analysis.
+I have however, still pulled the 1,000 rows from the API to show some of the data cleaning exercises I performed.
+The CSV data is cleaner and easier to work with than the API data.
+Most of the work for this project was on data selection, cleaning and preparation.
+
+For Near Earth Objects (NEOs), I used a dataset downloaded from NASA's website showing NEOs 1 year into the future.
+
+```{r read data, message=FALSE, warning=FALSE}
+# Read data from all the sources
+# Get Meteorite Landings using NASA's API
+url <- "https://data.nasa.gov/resource/gh4g-9sfh.json"
+meteorite_landings <- url %>% fromJSON()
+
+# Get Meteorite Landings from CSV file downloaded from NASA's website
+meteorite_landings_csv <- read_csv("Meteorite_Landings.csv", show_col_types = FALSE)
+
+# Get Near Earth Objects from CSV file downloaded from NASA's website
+near_earth_object <- read_csv("NEO Earth Close Approaches.csv", show_col_types = FALSE)
+
+```
+
+## Clean Data
+
+a.  Clean and Wrangle Meteorite Landings for dataset from the API. After cleaning this dataset contains 1000 rows and 14 columns.
+
+```{r clean meteorite landings for dataset from the API, message=FALSE, warning=FALSE}
+
+# Here I split the year on "-" and used map_chr() to get the first part as year. Next, I converted reclong, reclat, and mass to numbers. I set all NA reclong, reclat to 0. Next, I computed the country and continent names based on latitude and longitude.  
+clean_meteorite_landings <- meteorite_landings %>%
+  mutate(year = str_trim(map_chr(str_split(year, "-"), 1))) %>%
+  mutate(reclong = parse_number(reclong)) %>%
+  mutate(reclat = parse_number(reclat)) %>%
+  mutate(mass = parse_number(mass)) %>%
+  mutate(reclong = ifelse(is.na(reclong), 0, reclong),
+         reclat = ifelse(is.na(reclat), 0, reclat)) %>%
+  mutate(country = map.where(database="world", reclong, reclat)) %>%
+  mutate(continent = countrycode(sourcevar = country, origin = "country.name", destination = "continent"))
+
+```
+
+b.  Clean and wrangle Meteorite Landings for dataset from CSV file. The cleaned dataframe contains 45716 rows and 12 columns.
+
+```{r clean meteorite landings for dataset from CSV, message=FALSE, warning=FALSE}
+
+# I renamed `mass (g)` to mass using the rename() function. I set all NA reclong, reclat to 0. Next, I computed the country and continent names based on latitude and longitude. I used the case_when() function to handle special cases for country names and mapped it to the continents.
+clean_meteorite_landings_csv <- meteorite_landings_csv %>%
+  rename(mass = `mass (g)`) %>%
+  mutate(reclong = ifelse(is.na(reclong), 0, reclong),
+         reclat = ifelse(is.na(reclat), 0, reclat)) %>%
+  mutate(country = map.where(database="world", reclong, reclat)) %>%
+  mutate(continent = countrycode(sourcevar = country, origin = "country.name", destination = "continent")) %>%
+  mutate(continent = case_when(country == "UK:Northern Ireland" ~ "Europe",
+                               country == "Antarctica" ~ "Antarctica",
+                               TRUE ~ as.character(continent)))
+# Write this dataframe as a CSV file.
+write_csv(x = clean_meteorite_landings_csv, "clean_meteorite_landings_csv.csv")
+```
+
+c.  Clean and wrangle NEO dataset from CSV file.The cleaned dataframe contains 109 rows and 14 columns.
+
+```{r clean near earth object, message=FALSE, warning=FALSE}
+
+# Here I first split the `Close-Approach (CA) Date` and computed the close_approach_date_time, close_approach_date, and the close_approach_time. I removed the objects (2006 HV5), 7335 (1989 JA), and 349068 (2006 YT13) as their diameter information was not standard. Split and process Diameter field and create new columns called low_diameter, high_diameter, and mean_diameter. Dropped the column `Close-Approach (CA) Date`. I converted the close_approach_date to ymd format.  
+
+clean_near_earth_object <- near_earth_object %>%
+  mutate(close_approach_date_time = str_trim(map_chr(str_split(`Close-Approach (CA) Date`,"±"),1))) %>%
+  mutate(close_approach_date = str_trim(map_chr(str_split(close_approach_date_time, " "), 1))) %>%
+  mutate(close_approach_time = str_trim(map_chr(str_split(close_approach_date_time, " "), 2))) %>%
+  filter(Object!= "(2006 HV5)") %>%
+  filter(Object!= "7335 (1989 JA)") %>%
+  filter(Object!= "349068 (2006 YT13)") %>%
+  mutate(low_diameter = str_trim(map_chr(str_split(Diameter, "-"), 1))) %>%
+  mutate(high_diameter = str_trim(map_chr(str_split(Diameter, "-"), 2))) %>%
+  mutate(low_diameter = str_replace(low_diameter, "m", "")) %>%
+  mutate(high_diameter = str_replace(high_diameter, "m", "")) %>%
+  mutate(low_diameter = parse_number(low_diameter)) %>%
+  mutate(high_diameter = parse_number(high_diameter)) %>%
+  mutate(mean_diameter = (low_diameter + high_diameter)/2) %>%
+  select(-`Close-Approach (CA) Date`) %>%
+  mutate(close_approach_date = ymd(close_approach_date))
+
+# Write dataframe to a CSV file.
+write_csv(x = clean_near_earth_object, "clean_near_earth_object.csv")
+
+```
+
+# A study of Meteorite Landings
+
+Meteoroids are known as "space rocks" and their sizes range from dust grains to small asteroids.
+Most are pieces of other bodies of rocks that have been broken off.
+They can come from comets, asteroids, from the Moon, and other planets.
+Some meteoroids can be rocky, or metallic, or a mixture of rock, and metal.
+Meteoroids entering the Earth's atmosphere at high speed and burn up, are known as meteors.
+They are also referred to as "shooting stars".
+When a meteoroid enters the Earth's atmosphere and hits the ground, it is called a meteorite.
+When there are lots of meteors in the night sky, there is a meteor shower.
+
+## Top 10 Meteorite Landings by Mass
+
+```{r top 10 meteorite landings csv by Mass, message=FALSE, warning=FALSE}
+top_10_meteorite_landings_csv <- clean_meteorite_landings_csv %>%
+  select(name, id, nametype, recclass, mass, fall, year, country, reclat, reclong) %>%
+  arrange(desc(mass)) %>%
+  head(n = 10)
+top_10_meteorite_landings_csv %>%
+  knitr::kable()
+```
+
+## All Known Meteorite Landings in the 21st Century
+
+```{r map recent meteorite landings, message=FALSE, warning=FALSE}
+clean_meteorite_landings_csv %>%
+  filter(year >= 2000) %>%
+  mapview(xcol = "reclong", ycol = "reclat", crs = 4269,cex = "mass",grid = FALSE, legend = FALSE)
+```
+
+When you look at this map you can see that most meteorite landings are over land.
+This is probably because the ones falling in the oceans are probably rarely recorded.
+If you hover over the circles on this map, it will show you the latitude and the longitude information of the locations.
+If you click on the circles, it will display all of the details of the particular meteorite.
+
+```{r Craeting a dot plot using the top 100 meteteorite landings, message=FALSE, warning=FALSE, fig.show='hide'}
+top_100_meteorite_landings_csv <- clean_meteorite_landings_csv %>%
+  arrange(desc(mass)) %>%
+  head(n = 100)
+
+top_100_meteorite_landings_csv %>%
+  ggplot(aes(year, mass, label = country,colour = fall)) +
+  scale_y_continuous(labels = scales::comma) +
+  geom_point() +
+  ggtitle("Top 100 Meteorite Landings") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text.x = element_text(angle = 45)) +
+  xlab("Year") +
+  scale_y_continuous(
+  name = "Mass in grams",
+  trans = "log10",
+  labels = scales::comma
+  )
+
+ggplotly()
+```
+
+This graph shows 100 meteorites with the largest mass.
+Meteorites are categorized as "Fell" or "Found".
+These categories are shown here in different colors.
+
+## Top 100 Meteorite Landings on a Map.
+
+```{r top 100 meteorite landings of all time on the world map, message=FALSE, warning=FALSE}
+top_100_meteorite_landings_csv %>%
+  mapview(xcol = "reclong", ycol = "reclat", crs = 4269, grid = FALSE,cex = "mass", zcol = "mass", popup = TRUE, color = "blue",map.types = c("Esri.WorldShadedRelief", "OpenStreetMap.DE"))
+
+```
+
+If you hover over the circles on this map, it will show you the latitude and the longitude information of the locations.
+If you click on the circles, it will display all of the details of the particular meteorite.
+
+```{r meteorite landings by country, message=FALSE, warning=FALSE, fig.show='hide'}
+meteorite_landings_by_country <- clean_meteorite_landings_csv %>%
+  group_by(country) %>%
+  summarize(total_landings = n())
+
+```
+
+## Next shown are 20 countries with the most meteorite landings
+
+For this graph, Antarctica, which is listed both as a country and a continent in the cleaned dataset has been excluded as Antarctica is technically not a country.
+The country Oman with 3094 landings comes out on the top.
+Oman is a country located in southeastern coast of the Arabian Peninsula where the Persian Gulf meets the Arabian Sea.
+Oman is a monarchy and has many oil and gas pipelines.
+
+```{r Circle packing chart to show 20 countries with most meteorite landings, message=FALSE, warning=FALSE}
+top_20_meteorite_landings_by_country <- meteorite_landings_by_country %>%
+  na.omit() %>%
+  filter(!country == "Antarctica") %>%
+  arrange(desc(total_landings)) %>%
+  head(20)
+
+cord_meteorite_landings_by_country <- top_20_meteorite_landings_by_country %>%
+  circleProgressiveLayout("total_landings", sizetype = "area")
+
+
+packing_data_meteorite_landings <- cbind(cord_meteorite_landings_by_country, top_20_meteorite_landings_by_country)
+
+cord_vertices <- circleLayoutVertices(cord_meteorite_landings_by_country)
+
+plot_1 <- ggplot()
+plot_1 <- plot_1 + geom_polygon(data = cord_vertices, aes(x, y, group = id, fill = as.factor(id)))
+plot_1 <- plot_1 + geom_text(data = packing_data_meteorite_landings, aes(x, y, size = total_landings, label = paste0(country, '\n', total_landings)))
+plot_1 <- plot_1 + coord_equal()
+plot_1 <- plot_1 + theme_void()
+plot_1 <- plot_1 + theme(legend.position = "none")
+plot_1 <- plot_1 + ggtitle("Top 20 Meteorite Landings by Country")
+
+nb.cols <- 20
+mycolors <- colorRampPalette(brewer.pal(12, "Set3"))(nb.cols)
+plot_1 <- plot_1 + scale_fill_manual(values = mycolors)
+plot_1 <- plot_1 + theme(plot.title = element_text(hjust = 0.5))
+plot_1
+```
+
+## A look at the median Meteorite Landings by Continent
+
+As Antarctica does not have any countries, it is not possible to get a true median.
+The total number of Meteorite Landings in Antarctica is greater than any other continent at 20,161.
+Not including Antarctica, the continent with the highest median landing is Africa at 6.
+
+```{r Meteorite landings by Continent, message=FALSE, warning=FALSE, fig.show='hide'}
+
+clean_meteorite_landings_csv %>%
+  filter(!is.na(continent)) %>%
+  group_by(continent,country) %>%
+  summarize(total_meteorite_by_cont_country = n()) %>%
+  ggplot(aes(continent,total_meteorite_by_cont_country, fill = continent)) +
+  geom_boxplot() +
+  geom_beeswarm() +
+  xlab("Continent") +
+  scale_y_continuous(
+  name = "Meteorite Landings",
+  trans = "log10"
+  
+  ) +
+  ggtitle("Meteorite Landings by Continent") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position="none") 
+ 
+ggplotly()
+
+```
+
+# A Study of Near Earth Objects
+
+Near Earth Objects (NEOs) are defined as "any small body (comet or asteroid) passing within 1.3 astronomical unit (au) of the Sun".
+1 au is the distance from Earth to Sun = \~ 93 million miles.
+An NEO is considered to be a Potentially Hazardous Object (PHO) if it passes within 0.05 au of Earth's orbit.
+All data in this NEO dataset is less than 0.05 au and therefore, all the objects can be considered to be a PHO.
+
+## Ten Closest NEOs over the Next Year
+
+```{r Closest NEOs over the up coming year, message=FALSE, warning=FALSE}
+
+sorted_clean_near_earth_objects <-clean_near_earth_object %>%
+  arrange(`CA DistanceNominal (au)`) %>%
+  select(`CA DistanceNominal (au)`, `CA DistanceMinimum (au)`, `V relative(km/s)`, Diameter, mean_diameter
+         , close_approach_date)
+
+sorted_clean_near_earth_objects %>%
+  head(n = 10) %>%
+  knitr::kable()
+
+```
+
+## Mean Diameter of NEOs in a Histogram
+
+This histogram is right skewed.
+Most of the mean diameters are between 3 and 117.
+The two NEOs with mean diameters of 516, 594, and 606 can be considered to be outliers.
+
+```{r Histogram of mean_diameter, message=FALSE, warning=FALSE, fig.show='hide'}
+sorted_clean_near_earth_objects %>%
+  ggplot(aes(x = mean_diameter)) +
+  geom_histogram( binwidth=3, fill="#69b3a2", color="#e9ecef", alpha=0.9) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Histogram: Mean Diameter of Near Earth Objects") +
+  xlab("Mean Diameter") +
+  ylab("Count")
+ 
+ggplotly()
+  
+    
+```
+
+## NEOs by Distance from Earth, their Relative Velocity, and Mean Diameter
+
+Here all the NEOs are PHOs as their distance is within 0.05 au.
+The NEOs with the smallest distance, largest velocity, and the largest diameters are the most dangerous.
+
+```{r Near Earth Objects by distance, velocity, and diameter, message=FALSE, warning=FALSE, fig.show='hide'}
+sorted_clean_near_earth_objects %>%
+  ggplot(aes(`CA DistanceNominal (au)`, `V relative(km/s)`, size = mean_diameter, color = mean_diameter, label = close_approach_date)) +
+  geom_point() +
+  ggtitle("Near Earth Objects") +
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle = 360)) +
+  scale_color_continuous(name = "") +
+  scale_size(c(1,10))
+  
+ggplotly()
+```
+
+In the graph above the size and color of the points represent the mean diameter.
+
+# Sources
+
+<https://data.nasa.gov/Space-Science/Meteorite-Landings/gh4g-9sfh>
+
+<https://cneos.jpl.nasa.gov/ca/>
+
+<https://www.nsf.gov/attachments/242692/public/JohnsonLindley_PDCONEOOBrief.pdf>
+
+<https://map-rfun.library.duke.edu/01_georeference.html>
+
+<https://www.youtube.com/watch?v=jKIR2-QpaI4>
+
+<https://www.datanovia.com/en/blog/easy-way-to-expand-color-palettes-in-r/>
+
+<https://api.rpubs.com/solomona/494803>
+
+<https://r-graph-gallery.com/220-basic-ggplot2-histogram.html>
+
+<https://www.britannica.com/place/Oman>
